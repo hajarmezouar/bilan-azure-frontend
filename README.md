@@ -110,3 +110,17 @@ have been added and verified.
 ## Out of scope for this repo
 
 - Provisioning the Azure infrastructure (Static Web App, App Service, database).
+
+## Repository governance and security
+
+- commits are signed with SSH and must display the GitHub `Verified` badge;
+- root `CODEOWNERS` assigns the Angular sources, npm manifests, container image
+  and GitHub automation to `@hajarmezouar`;
+- Dependabot checks npm, Docker and GitHub Actions dependencies weekly;
+- the `Security` workflow runs Trivy and Gitleaks on every push and pull
+  request.
+
+Trivy checks dependencies, the Dockerfile, secrets and configuration issues.
+Gitleaks scans the complete Git history. These controls do not depend on GitHub
+native secret scanning, whose availability can vary with repository visibility
+and the selected GitHub plan.
