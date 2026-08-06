@@ -1,9 +1,7 @@
 export const environment = {
   production: true,
-  // Both values below are placeholders only — never commit real ones.
-  // swa-deploy.yml resolves the backend App Service and the Key Vault by tag at
-  // deploy time (no hardcoded names) and substitutes both tokens via sed
-  // right before `npm run build`, on the ephemeral CI runner only.
-  apiBaseUrl: 'https://REPLACE_WITH_PROD_API_URL/api',
-  apiKey: '__BACKEND_API_KEY__',
+  apiBaseUrl: 'https://app-azure-quiz-backend-nonprod.azurewebsites.net/api',
+  // Browser bundles cannot protect secrets. Authentication must be enforced
+  // server-side or through an interactive identity flow, never a compiled key.
+  apiKey: '',
 };

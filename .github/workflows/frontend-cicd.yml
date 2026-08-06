@@ -1,0 +1,112 @@
+name: Frontend CI/CD
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-nonprod-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Lint application
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build production application
+        run: npm run build:prod
+
+      - name: Upload reviewed static application
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-${{ github.sha }}
+          path: dist/azure-quiz-frontend/browser
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy-nonprod:
+    name: Deploy non-production
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment: nonprod
+    steps:
+      - name: Download reviewed static application
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-${{ github.sha }}
+          path: dist/azure-quiz-frontend/browser
+
+      - name: Deploy to Azure Static Web Apps
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: dist/azure-quiz-frontend/browser
+          output_location: ""
+          skip_app_build: true
+          skip_api_build: true
+
+      - name: Verify frontend and backend
+        env:
+          FRONTEND_URL: https://icy-stone-0f2132603.7.azurestaticapps.net
+          BACKEND_URL: https://app-azure-quiz-backend-nonprod.azurewebsites.net
+        run: |
+          for attempt in $(seq 1 18); do
+            if curl --fail --silent --show-error --max-time 15 "${FRONTEND_URL}" >/dev/null; then
+              break
+            fi
+            if [ "${attempt}" = "18" ]; then
+              echo "Frontend did not become available: ${FRONTEND_URL}" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          curl --fail --silent --show-error --max-time 15 \
+            "${BACKEND_URL}/actuator/health"
+
+          CORS_HEADERS=$(mktemp)
+          curl --fail --silent --show-error --max-time 15 \
+            --dump-header "${CORS_HEADERS}" \
+            --output /dev/null \
+            --header "Origin: ${FRONTEND_URL}" \
+            "${BACKEND_URL}/api/certifications"
+          grep --ignore-case --fixed-strings \
+            "access-control-allow-origin: ${FRONTEND_URL}" "${CORS_HEADERS}"
+
+          {
+            echo "### Frontend non-production deployment"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Frontend: ${FRONTEND_URL}"
+            echo "- Backend: ${BACKEND_URL}"
+          } >> "${GITHUB_STEP_SUMMARY}"
