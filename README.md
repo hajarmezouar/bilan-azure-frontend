@@ -1,126 +1,124 @@
-# azure-quiz-frontend
+# Azure Quiz — Angular Frontend
 
-Angular application to review Microsoft certifications (AZ-900 to start, AZ-104 next): review by
-module or mock exam, accessible from a simple link (no account). Consumes the REST API of
-[azure-quiz-backend](../azure-quiz-backend).
+Web interface for reviewing Microsoft certifications by module or mock exam. It is available without installation through Azure Static Web Apps.
 
+## Status
 
-## Stack
-
-- Angular 22 (standalone components, signals), Angular Material, ngx-translate (fr/en)
-- Vitest (Angular CLI 22 native test runner)
-- ESLint (`angular-eslint`) + Prettier, husky + lint-staged on pre-commit
+- Application: [https://icy-stone-0f2132603.7.azurestaticapps.net](https://icy-stone-0f2132603.7.azurestaticapps.net)
+- Backend: [https://app-azure-quiz-backend-nonprod.azurewebsites.net](https://app-azure-quiz-backend-nonprod.azurewebsites.net)
+- GitHub Actions pipeline validated through deployment and frontend/backend/CORS checks.
 
 ## Application architecture
 
-The frontend is the application's public entry point. It is compiled into
-static files and hosted by Azure Static Web Apps. It communicates only with the
-Spring Boot REST API over HTTPS.
-
 ![Azure Quiz frontend architecture](docs/application-architecture.png)
 
-The editable draw.io source is available at
-[`docs/application-architecture.drawio`](docs/application-architecture.drawio).
-
-Main runtime flow:
+Editable source: [application-architecture.drawio](docs/application-architecture.drawio).
 
 ```text
 User browser
      |
      | HTTPS
      v
-Angular frontend (Azure Static Web Apps)
+Angular / Azure Static Web Apps
      |
      | HTTPS REST API
      v
-Spring Boot backend (Azure Linux Web App)
+Spring Boot / Azure Linux Web App
      |
      +--> private Azure data services
 ```
 
-The frontend never receives database, Redis, Storage or Key Vault credentials.
-Its production build receives the backend HTTPS URL through the deployment
-workflow. Sensitive backend configuration remains in Azure Key Vault.
+The frontend consists of public static files. It therefore contains no password, Azure token, database key or other secret. It communicates only with the backend API; the backend URL may be public while all data services remain private.
 
-The complete infrastructure and its decisions are maintained in the
-`bilan-azure-terraform` repository.
+The complete infrastructure is maintained in `bilan-azure-terraform`.
+
+## Technology
+
+- Angular 22 with standalone components and signals;
+- Angular Material;
+- ngx-translate for French and English;
+- Vitest;
+- ESLint, Prettier, Husky and lint-staged;
+- Azure Static Web Apps.
 
 ## Run locally
 
-Prerequisites: Node 22+, and the backend (`azure-quiz-backend`) running on `http://localhost:8080`.
+Prerequisites: Node.js 22 and the backend running on `http://localhost:8080`.
 
 ```bash
-npm install
-npm start   # http://localhost:4200, targets the API on localhost:8080 (see src/environments/environment.development.ts)
+npm ci
+npm start
 ```
 
-## Tests and quality
+The application runs on `http://localhost:4200`. The development environment automatically targets the local API.
+
+Local checks:
 
 ```bash
-npm test           # Vitest
-npm run test:coverage
+npm test
 npm run lint
 npm run format:check
-```
-
-## Production build
-
-```bash
 npm run build:prod
 ```
 
-Static output in `dist/azure-quiz-frontend/browser` (that's the folder to point to as
-`output_location` when deploying to Azure Static Web Apps).
+The production build is generated in `dist/azure-quiz-frontend/browser` and targets:
 
-The production environment targets the non-production backend at
-`https://app-azure-quiz-backend-nonprod.azurewebsites.net/api`. The browser
-bundle contains no API key or infrastructure credential.
+```text
+https://app-azure-quiz-backend-nonprod.azurewebsites.net/api
+```
 
-## Continuous deployment
+## Features
 
-The `Frontend CI/CD` GitHub Actions workflow follows this sequence:
+- certification selection;
+- module browsing;
+- module-based quizzes;
+- mock exams;
+- answer submission and correction;
+- final result display;
+- French and English interface.
 
-1. check out the signed commit;
-2. install the declared Node and npm versions with dependency caching;
-3. run `npm ci`;
-4. run tests, linting and formatting checks;
-5. scan the source, dependencies and repository for vulnerabilities or secrets;
-6. run `npm run build:prod` with the reviewed non-production backend URL;
-7. deploy `dist/azure-quiz-frontend/browser` to Azure Static Web Apps;
-8. execute HTTPS availability, backend health and CORS smoke tests;
-9. mark the workflow as failed so developers can see and diagnose any error.
+## CI/CD pipeline
 
-Infrastructure is provisioned separately by Terraform. Pre-production and
-production use the same build and deployment process; only environment-specific
-configuration differs.
+The [frontend-cicd.yml](.github/workflows/frontend-cicd.yml) workflow performs:
 
-The protected GitHub environment `nonprod` must contain one secret named
-`AZURE_STATIC_WEB_APPS_API_TOKEN`. Retrieve it from Azure Static Web Apps and
-store it directly in GitHub; never print it, commit it or place it in Terraform
-state. Pull requests build and test but do not receive this deployment secret.
+1. `npm ci` using the committed lockfile;
+2. linting, formatting verification and Vitest tests;
+3. Angular production build;
+4. download of the reviewed build artifact;
+5. deployment to Azure Static Web Apps;
+6. frontend HTTPS availability check;
+7. backend health and expected CORS header checks.
 
+Pull Requests build and test without receiving the Azure deployment token. Deployment runs only from `main` through the protected GitHub environment `nonprod`.
 
-## Structure
+The environment contains this secret:
 
-- `src/app/core` — models, services (`QuizApiService` for REST calls, `QuizSessionStore` for
-  signal-based quiz session state)
-- `src/app/features` — pages: `certifications` (home), `modules` (a certification's modules +
-  starting a mock exam), `quiz` (question-by-question flow), `results` (final score)
+```text
+AZURE_STATIC_WEB_APPS_API_TOKEN
+```
 
-## Out of scope for this repo
+The token is never stored in source code, documentation, logs or Terraform state.
 
-- Provisioning the Azure infrastructure (Static Web App, App Service, database).
+## Pre-production and production parity
 
-## Repository governance and security
+The same source code, Angular build and deployment workflow can be used in production. Only environment values, URLs and deployment permissions change. This prevents pre-production from validating an artifact different from the one intended for users.
 
-- commits are signed with SSH and must display the GitHub `Verified` badge;
-- root `CODEOWNERS` assigns the Angular sources, npm manifests, container image
-  and GitHub automation to `@hajarmezouar`;
-- Dependabot checks npm, Docker and GitHub Actions dependencies weekly;
-- the `Security` workflow runs Trivy and Gitleaks on every push and pull
-  request.
+## Governance and security
 
-Trivy checks dependencies, the Dockerfile, secrets and configuration issues.
-Gitleaks scans the complete Git history. These controls do not depend on GitHub
-native secret scanning, whose availability can vary with repository visibility
-and the selected GitHub plan.
+- signed commits displayed as `Verified`;
+- ownership declared in `CODEOWNERS`;
+- Dependabot for npm, Docker and GitHub Actions;
+- Trivy and Gitleaks on every push and Pull Request;
+- protected `main` branch and deployment restricted to `nonprod`;
+- no secrets in the browser bundle.
+
+A failed test, scan, build, deployment or smoke test blocks the workflow and reports the malfunction through GitHub Actions.
+
+## Main structure
+
+- `src/app/core`: models, REST services and session state;
+- `src/app/features/certifications`: certification selection;
+- `src/app/features/modules`: modules and exam launch;
+- `src/app/features/quiz`: question flow;
+- `src/app/features/results`: final result;
+- `public/staticwebapp.config.json`: Static Web Apps navigation rules.
