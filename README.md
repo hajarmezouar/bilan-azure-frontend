@@ -72,32 +72,32 @@ npm run build:prod
 Static output in `dist/azure-quiz-frontend/browser` (that's the folder to point to as
 `output_location` when deploying to Azure Static Web Apps).
 
-Before building for a real deployment, update `src/environments/environment.ts` with the deployed
-backend API URL (`apiBaseUrl`).
+The production environment targets the non-production backend at
+`https://app-azure-quiz-backend-nonprod.azurewebsites.net/api`. The browser
+bundle contains no API key or infrastructure credential.
 
-## Planned continuous deployment
+## Continuous deployment
 
-The frontend delivery pipeline will be implemented with GitHub Actions. A
-change to the frontend must follow this sequence:
+The `Frontend CI/CD` GitHub Actions workflow follows this sequence:
 
 1. check out the signed commit;
 2. install the declared Node and npm versions with dependency caching;
 3. run `npm ci`;
 4. run tests, linting and formatting checks;
 5. scan the source, dependencies and repository for vulnerabilities or secrets;
-6. inject the non-production backend URL during the ephemeral CI build;
-7. run `npm run build:prod`;
-8. deploy `dist/azure-quiz-frontend/browser` to Azure Static Web Apps;
-9. execute an HTTPS availability check and a frontend-to-backend smoke test;
-10. mark the workflow as failed so developers can see and diagnose any error.
+6. run `npm run build:prod` with the reviewed non-production backend URL;
+7. deploy `dist/azure-quiz-frontend/browser` to Azure Static Web Apps;
+8. execute HTTPS availability, backend health and CORS smoke tests;
+9. mark the workflow as failed so developers can see and diagnose any error.
 
 Infrastructure is provisioned separately by Terraform. Pre-production and
 production use the same build and deployment process; only environment-specific
 configuration differs.
 
-This section documents the target workflow. The GitHub Actions workflow is not
-considered operational until its file, protected environment and successful run
-have been added and verified.
+The protected GitHub environment `nonprod` must contain one secret named
+`AZURE_STATIC_WEB_APPS_API_TOKEN`. Retrieve it from Azure Static Web Apps and
+store it directly in GitHub; never print it, commit it or place it in Terraform
+state. Pull requests build and test but do not receive this deployment secret.
 
 
 ## Structure
