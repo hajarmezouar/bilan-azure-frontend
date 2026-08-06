@@ -74,7 +74,6 @@ jobs:
           app_location: dist/azure-quiz-frontend/browser
           output_location: ""
           skip_app_build: true
-          skip_api_build: true
 
       - name: Verify frontend and backend
         env:
