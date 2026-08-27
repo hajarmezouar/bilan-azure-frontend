@@ -21,6 +21,7 @@ COPY . .
 ARG API_BASE_URL
 RUN test -n "$API_BASE_URL" || (echo "API_BASE_URL build arg is required" && exit 1)
 RUN sed -i "s#https://REPLACE_WITH_PROD_API_URL/api#${API_BASE_URL}#" src/environments/environment.ts
+RUN grep -F "apiBaseUrl: '${API_BASE_URL}'" src/environments/environment.ts
 
 RUN npm run build:prod
 
