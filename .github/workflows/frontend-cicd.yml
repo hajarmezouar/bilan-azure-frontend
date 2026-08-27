@@ -77,7 +77,7 @@ jobs:
 
       - name: Verify frontend and backend
         env:
-          FRONTEND_URL: https://icy-stone-0f2132603.7.azurestaticapps.net
+          FRONTEND_URL: https://delightful-smoke-01664d103.7.azurestaticapps.net
           BACKEND_URL: https://app-azure-quiz-backend-nonprod.azurewebsites.net
         run: |
           for attempt in $(seq 1 18); do
