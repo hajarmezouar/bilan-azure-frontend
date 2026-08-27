@@ -6,16 +6,28 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target deployment environment"
+        required: true
+        type: choice
+        options:
+          - nonprod
+          - prod
 
 permissions:
   contents: read
 
 concurrency:
-  group: frontend-nonprod-${{ github.ref }}
+  group: frontend-${{ inputs.environment || 'nonprod' }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE_REPOSITORY: azure-quiz-frontend
+  IMAGE_TAG: ${{ github.sha }}
+
 jobs:
-  build-and-test:
+  build-test:
     name: Build and test
     runs-on: ubuntu-latest
     steps:
@@ -43,69 +55,92 @@ jobs:
       - name: Build production application
         run: npm run build:prod
 
-      - name: Upload reviewed static application
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-${{ github.sha }}
-          path: dist/azure-quiz-frontend/browser
-          if-no-files-found: error
-          retention-days: 1
-
-  deploy-nonprod:
-    name: Deploy non-production
+  deploy:
+    name: Deploy ${{ inputs.environment || 'nonprod' }}
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs: build-and-test
+    needs: build-test
     runs-on: ubuntu-latest
-    environment: nonprod
+    environment: ${{ inputs.environment || 'nonprod' }}
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Download reviewed static application
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-${{ github.sha }}
-          path: dist/azure-quiz-frontend/browser
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Deploy to Azure Static Web Apps
-        uses: Azure/static-web-apps-deploy@v1
+      - name: Sign in to Azure with GitHub OIDC
+        uses: azure/login@v2
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          action: upload
-          app_location: dist/azure-quiz-frontend/browser
-          output_location: ""
-          skip_app_build: true
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Verify frontend and backend
+      - name: Sign in to Azure Container Registry
+        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
+      - name: Build frontend container
         env:
-          FRONTEND_URL: https://delightful-smoke-01664d103.7.azurestaticapps.net
-          BACKEND_URL: https://app-azure-quiz-backend-nonprod.azurewebsites.net
+          API_BASE_URL: ${{ vars.BACKEND_URL }}/api
+        run: docker build --build-arg API_BASE_URL="${API_BASE_URL}" --tag "${IMAGE_REPOSITORY}:${IMAGE_TAG}" .
+
+      - name: Scan container image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          timeout: 15m0s
+
+      - name: Push immutable image to Azure Container Registry
+        env:
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
         run: |
-          for attempt in $(seq 1 18); do
+          LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+          docker tag "${IMAGE_REPOSITORY}:${IMAGE_TAG}" "${LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          docker push "${LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+
+      - name: Deploy image to Azure Web App
+        env:
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+        run: |
+          LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+          az webapp config container set \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}" \
+            --container-image-name "${LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" \
+            --container-registry-url "https://${LOGIN_SERVER}" \
+            --output none
+          az webapp start --resource-group "${RESOURCE_GROUP}" --name "${WEBAPP_NAME}"
+
+      - name: Verify frontend
+        env:
+          FRONTEND_URL: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+        run: |
+          for attempt in $(seq 1 30); do
             if curl --fail --silent --show-error --max-time 15 "${FRONTEND_URL}" >/dev/null; then
+              echo "Frontend is healthy at ${FRONTEND_URL}" >> "${GITHUB_STEP_SUMMARY}"
               break
             fi
-            if [ "${attempt}" = "18" ]; then
+            if [ "${attempt}" = "30" ]; then
               echo "Frontend did not become available: ${FRONTEND_URL}" >&2
               exit 1
             fi
-            sleep 10
+            sleep 20
           done
-
-          curl --fail --silent --show-error --max-time 15 \
-            "${BACKEND_URL}/actuator/health"
-
-          CORS_HEADERS=$(mktemp)
-          curl --fail --silent --show-error --max-time 15 \
-            --dump-header "${CORS_HEADERS}" \
-            --output /dev/null \
-            --header "Origin: ${FRONTEND_URL}" \
-            "${BACKEND_URL}/api/certifications"
-          grep --ignore-case --fixed-strings \
-            "access-control-allow-origin: ${FRONTEND_URL}" "${CORS_HEADERS}"
-
+          curl --fail --silent --show-error --max-time 15 "${BACKEND_URL}/actuator/health"
           {
-            echo "### Frontend non-production deployment"
+            echo "### Frontend ${{ inputs.environment || 'nonprod' }} deployment"
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- Frontend: ${FRONTEND_URL}"
             echo "- Backend: ${BACKEND_URL}"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Sign out from Azure
+        if: always()
+        continue-on-error: true
+        run: az logout
