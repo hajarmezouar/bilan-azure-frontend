@@ -4,8 +4,9 @@ Web interface for reviewing Microsoft certifications by module or mock exam. It 
 
 ## Status
 
-- Application: [https://icy-stone-0f2132603.7.azurestaticapps.net](https://icy-stone-0f2132603.7.azurestaticapps.net)
-- Backend: [https://app-azure-quiz-backend-nonprod.azurewebsites.net](https://app-azure-quiz-backend-nonprod.azurewebsites.net)
+- Application: [https://delightful-smoke-01664d103.7.azurestaticapps.net](https://delightful-smoke-01664d103.7.azurestaticapps.net)
+- Backend API: [`/api/certifications`](https://app-azure-quiz-backend-nonprod.azurewebsites.net/api/certifications)
+- Backend health: [`/actuator/health`](https://app-azure-quiz-backend-nonprod.azurewebsites.net/actuator/health)
 - GitHub Actions pipeline validated through deployment and frontend/backend/CORS checks.
 
 ## Application architecture
