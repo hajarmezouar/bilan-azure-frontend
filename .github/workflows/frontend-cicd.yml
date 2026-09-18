@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: frontend-nonprod-${{ github.ref }}
@@ -18,12 +19,13 @@ jobs:
   build-and-test:
     name: Build and test
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -43,69 +45,173 @@ jobs:
       - name: Build production application
         run: npm run build:prod
 
-      - name: Upload reviewed static application
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-${{ github.sha }}
-          path: dist/azure-quiz-frontend/browser
-          if-no-files-found: error
-          retention-days: 1
-
   deploy-nonprod:
     name: Deploy non-production
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+
     needs: build-and-test
     runs-on: ubuntu-latest
     environment: nonprod
-    steps:
-      - name: Download reviewed static application
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-${{ github.sha }}
-          path: dist/azure-quiz-frontend/browser
 
-      - name: Deploy to Azure Static Web Apps
-        uses: Azure/static-web-apps-deploy@v1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          action: upload
-          app_location: dist/azure-quiz-frontend/browser
-          output_location: ""
-          skip_app_build: true
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
+      - name: Build frontend container
+        env:
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+        run: |
+          IMAGE="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
+
+          echo "Building ${IMAGE}"
+
+          docker build \
+            --build-arg API_BASE_URL="${BACKEND_URL}/api" \
+            --build-arg API_KEY="not-required" \
+            --tag "${IMAGE}" \
+            .
+
+      - name: Push reviewed image to ACR
+        env:
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+        run: |
+          IMAGE="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
+
+          docker push "${IMAGE}"
+
+      - name: Deploy exact image to App Service
+        env:
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+        run: |
+          IMAGE="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
+
+          echo "Deploying ${IMAGE}"
+
+          az webapp config container set \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}" \
+            --container-image-name "${IMAGE}" \
+            --container-registry-url "https://${ACR_NAME}.azurecr.io"
+
+          az webapp start \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}"
+
+      - name: Verify deployed image
+        env:
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+        run: |
+          EXPECTED="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
+
+          ACTUAL=$(az webapp config container show \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}" \
+            --query "[?name=='DOCKER_CUSTOM_IMAGE_NAME'].value | [0]" \
+            -o tsv)
+
+          echo "Expected: ${EXPECTED}"
+          echo "Azure:    ${ACTUAL}"
+
+          case "${ACTUAL}" in
+            *"${EXPECTED}"*)
+              echo "Correct image configured."
+              ;;
+            *)
+              echo "Unexpected image configured." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Verify frontend and backend
         env:
-          FRONTEND_URL: https://icy-stone-0f2132603.7.azurestaticapps.net
-          BACKEND_URL: https://app-azure-quiz-backend-nonprod.azurewebsites.net
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
         run: |
-          for attempt in $(seq 1 18); do
-            if curl --fail --silent --show-error --max-time 15 "${FRONTEND_URL}" >/dev/null; then
+          echo "Waiting for frontend deployment..."
+
+          for attempt in $(seq 1 30); do
+            STATUS=$(curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --max-time 15 \
+              "${FRONTEND_URL}" || true)
+
+            echo "Attempt ${attempt}/30: HTTP ${STATUS}"
+
+            if [ "${STATUS}" = "200" ]; then
+              echo "Frontend is available."
               break
             fi
-            if [ "${attempt}" = "18" ]; then
+
+            if [ "${attempt}" = "30" ]; then
               echo "Frontend did not become available: ${FRONTEND_URL}" >&2
               exit 1
             fi
+
             sleep 10
           done
 
-          curl --fail --silent --show-error --max-time 15 \
+          echo "Checking backend health..."
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 15 \
             "${BACKEND_URL}/actuator/health"
 
+          echo
+          echo "Checking frontend/backend CORS..."
+
           CORS_HEADERS=$(mktemp)
-          curl --fail --silent --show-error --max-time 15 \
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 15 \
             --dump-header "${CORS_HEADERS}" \
             --output /dev/null \
             --header "Origin: ${FRONTEND_URL}" \
             "${BACKEND_URL}/api/certifications"
-          grep --ignore-case --fixed-strings \
-            "access-control-allow-origin: ${FRONTEND_URL}" "${CORS_HEADERS}"
 
+          grep \
+            --ignore-case \
+            --fixed-strings \
+            "access-control-allow-origin: ${FRONTEND_URL}" \
+            "${CORS_HEADERS}"
+
+      - name: Publish deployment summary
+        if: always()
+        env:
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+        run: |
           {
             echo "### Frontend non-production deployment"
             echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Image: \`${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}\`"
             echo "- Frontend: ${FRONTEND_URL}"
             echo "- Backend: ${BACKEND_URL}"
           } >> "${GITHUB_STEP_SUMMARY}"
