@@ -1,0 +1,45 @@
+name: Security - SCA
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-scan:
+    name: Trivy dependency scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Scan dependencies with Trivy
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Publish SCA summary
+        if: always()
+        run: |
+          {
+            echo "### Frontend SCA"
+            echo "- Tool: Trivy"
+            echo "- Scope: application dependencies"
+            echo "- Manifest/lock file: \`package-lock.json\`"
+            echo "- Severity policy: HIGH and CRITICAL"
+            echo "- Unfixed vulnerabilities: ignored for blocking"
+            echo "- Fixable HIGH/CRITICAL vulnerabilities: blocking"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

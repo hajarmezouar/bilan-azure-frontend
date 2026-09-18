@@ -1,0 +1,67 @@
+name: Security - SAST
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sonar:
+    name: SonarQube Cloud analysis
+    runs-on: ubuntu-latest
+
+    # SONAR_PROJECT_KEY, SONAR_ORGANIZATION and SONAR_TOKEN_FRONTED
+    # are stored in the GitHub nonprod environment.
+    environment: nonprod
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Verify LCOV report
+        run: |
+          test -s coverage/azure-quiz-frontend/lcov.info
+          echo "LCOV coverage report generated successfully."
+
+      - name: Run SonarQube Cloud analysis
+        uses: SonarSource/sonarqube-scan-action@1a6d90ebcb0e6a6b1d87e37ba693fe453195ae25 # v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN_FRONTED }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.sources=src
+            -Dsonar.tests=src
+            -Dsonar.test.inclusions=src/**/*.spec.ts
+            -Dsonar.exclusions=src/**/*.spec.ts
+            -Dsonar.javascript.lcov.reportPaths=coverage/azure-quiz-frontend/lcov.info
+
+      - name: Publish SAST summary
+        if: always()
+        run: |
+          {
+            echo "### Frontend SAST"
+            echo "- Tool: SonarQube Cloud"
+            echo "- Tests: Angular/Vitest"
+            echo "- Coverage format: LCOV"
+            echo "- Coverage report: \`coverage/azure-quiz-frontend/lcov.info\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"

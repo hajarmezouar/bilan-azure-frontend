@@ -1,0 +1,105 @@
+name: Security - Accessibility
+
+on:
+  workflow_dispatch:
+
+  workflow_run:
+    workflows:
+      - "Frontend CI/CD"
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  accessibility:
+    name: Pa11y accessibility scan
+
+    # Automatic scan only after a successful frontend deployment.
+    # Manual execution is also allowed for testing from a PR/feature branch.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    runs-on: ubuntu-latest
+    environment: nonprod
+
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Check frontend availability
+        env:
+          TARGET_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          echo "Checking frontend at ${TARGET_URL}"
+
+          for attempt in $(seq 1 12); do
+            STATUS=$(curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --max-time 15 \
+              "${TARGET_URL}" || true)
+
+            if [ "${STATUS}" = "200" ]; then
+              echo "Frontend is available."
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/12 returned HTTP ${STATUS}; retrying in 10 seconds."
+            sleep 10
+          done
+
+          echo "Frontend is not available: ${TARGET_URL}" >&2
+          exit 1
+
+      - name: Install Pa11y CI
+        run: npm install --global pa11y-ci
+
+      - name: Run accessibility scan
+        env:
+          TARGET_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          pa11y-ci \
+            --standard WCAG2AA \
+            --reporter cli \
+            "${TARGET_URL}" \
+            2>&1 | tee pa11y-report.txt
+
+      - name: Upload accessibility report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontend-accessibility-report
+          path: pa11y-report.txt
+          if-no-files-found: warn
+
+      - name: Publish accessibility summary
+        if: always()
+        env:
+          TARGET_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          {
+            echo "### Frontend Accessibility"
+            echo "- Tool: Pa11y CI"
+            echo "- Target: ${TARGET_URL}"
+            echo "- Environment: nonprod"
+            echo "- Standard: WCAG 2 AA"
+            echo "- Report artifact: \`frontend-accessibility-report\`"
+            echo ""
+            echo "#### Result"
+            if [ -f pa11y-report.txt ]; then
+              echo '```text'
+              tail -n 30 pa11y-report.txt
+              echo '```'
+            else
+              echo "No accessibility report was generated."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
