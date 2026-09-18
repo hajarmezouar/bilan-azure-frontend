@@ -1,11 +1,12 @@
 # Azure Quiz — Angular Frontend
 
-Web interface for reviewing Microsoft certifications by module or mock exam. It is available without installation through Azure Static Web Apps.
+Web interface for reviewing Microsoft certifications by module or mock exam. Its Angular build is served by an Nginx container on Azure Linux Web App.
 
 ## Status
 
-- Application: [https://icy-stone-0f2132603.7.azurestaticapps.net](https://icy-stone-0f2132603.7.azurestaticapps.net)
-- Backend: [https://app-azure-quiz-backend-nonprod.azurewebsites.net](https://app-azure-quiz-backend-nonprod.azurewebsites.net)
+- Application: [https://delightful-smoke-01664d103.7.azurestaticapps.net](https://delightful-smoke-01664d103.7.azurestaticapps.net)
+- Backend API: [`/api/certifications`](https://app-azure-quiz-backend-nonprod.azurewebsites.net/api/certifications)
+- Backend health: [`/actuator/health`](https://app-azure-quiz-backend-nonprod.azurewebsites.net/actuator/health)
 - GitHub Actions pipeline validated through deployment and frontend/backend/CORS checks.
 
 ## Application architecture
@@ -19,7 +20,7 @@ User browser
      |
      | HTTPS
      v
-Angular / Azure Static Web Apps
+Angular container / Azure Linux Web App
      |
      | HTTPS REST API
      v
@@ -39,7 +40,7 @@ The complete infrastructure is maintained in `bilan-azure-terraform`.
 - ngx-translate for French and English;
 - Vitest;
 - ESLint, Prettier, Husky and lint-staged;
-- Azure Static Web Apps.
+- Nginx container on Azure Linux Web App.
 
 ## Run locally
 
@@ -61,7 +62,7 @@ npm run format:check
 npm run build:prod
 ```
 
-The production build is generated in `dist/azure-quiz-frontend/browser` and targets:
+The production build is copied into the Nginx container. The backend URL is injected by the selected GitHub environment during the Docker build.
 
 ```text
 https://app-azure-quiz-backend-nonprod.azurewebsites.net/api
@@ -84,20 +85,26 @@ The [frontend-cicd.yml](.github/workflows/frontend-cicd.yml) workflow performs:
 1. `npm ci` using the committed lockfile;
 2. linting, formatting verification and Vitest tests;
 3. Angular production build;
-4. download of the reviewed build artifact;
-5. deployment to Azure Static Web Apps;
-6. frontend HTTPS availability check;
-7. backend health and expected CORS header checks.
+4. Nginx container build and Trivy image scan;
+5. publication to the selected Azure Container Registry;
+6. deployment of the immutable image to Azure Linux Web App;
+7. frontend and backend HTTPS health checks.
 
-Pull Requests build and test without receiving the Azure deployment token. Deployment runs only from `main` through the protected GitHub environment `nonprod`.
+Pull Requests build and test without Azure permissions. Pushes to `main` deploy `nonprod`; production is selected explicitly from **Actions > Frontend CI/CD > Run workflow** through the protected `prod` environment.
 
-The environment contains this secret:
+Each GitHub environment provides these non-secret identifiers:
 
 ```text
-AZURE_STATIC_WEB_APPS_API_TOKEN
+AZURE_CLIENT_ID
+AZURE_TENANT_ID
+AZURE_SUBSCRIPTION_ID
+AZURE_RESOURCE_GROUP
+AZURE_ACR_NAME
+AZURE_WEBAPP_NAME
+BACKEND_URL
 ```
 
-The token is never stored in source code, documentation, logs or Terraform state.
+Authentication uses GitHub OIDC and short-lived Azure credentials. No Azure client secret, publish profile or ACR password is stored in GitHub.
 
 ## Pre-production and production parity
 
@@ -109,7 +116,7 @@ The same source code, Angular build and deployment workflow can be used in produ
 - ownership declared in `CODEOWNERS`;
 - Dependabot for npm, Docker and GitHub Actions;
 - Trivy and Gitleaks on every push and Pull Request;
-- protected `main` branch and deployment restricted to `nonprod`;
+- protected `main` branch and environment-scoped deployments for `nonprod` and `prod`;
 - no secrets in the browser bundle.
 
 A failed test, scan, build, deployment or smoke test blocks the workflow and reports the malfunction through GitHub Actions.
@@ -121,4 +128,4 @@ A failed test, scan, build, deployment or smoke test blocks the workflow and rep
 - `src/app/features/modules`: modules and exam launch;
 - `src/app/features/quiz`: question flow;
 - `src/app/features/results`: final result;
-- `public/staticwebapp.config.json`: Static Web Apps navigation rules.
+- `nginx.conf`: SPA navigation fallback and container web-server configuration.
