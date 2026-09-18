@@ -15,6 +15,10 @@ jobs:
     name: SonarQube Cloud analysis
     runs-on: ubuntu-latest
 
+    # SONAR_PROJECT_KEY, SONAR_ORGANIZATION and SONAR_TOKEN_FRONTED
+    # are stored in the GitHub nonprod environment.
+    environment: nonprod
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -39,7 +43,7 @@ jobs:
       - name: Run SonarQube Cloud analysis
         uses: SonarSource/sonarqube-scan-action@1a6d90ebcb0e6a6b1d87e37ba693fe453195ae25 # v6
         env:
-          SONAR_TOKEN_FRONTEND: ${{ secrets.SONAR_TOKEN_FRONTEND }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN_FRONTED }}
         with:
           args: >
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
