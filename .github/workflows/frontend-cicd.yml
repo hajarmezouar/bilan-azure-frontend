@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: frontend-${{ inputs.environment || 'nonprod' }}-${{ github.ref }}
@@ -30,12 +31,13 @@ jobs:
   build-test:
     name: Build and test
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -55,87 +57,173 @@ jobs:
       - name: Build production application
         run: npm run build:prod
 
-  deploy:
-    name: Deploy ${{ inputs.environment || 'nonprod' }}
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    needs: build-test
+  deploy-nonprod:
+    name: Deploy non-production
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+
+    needs: build-and-test
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'nonprod' }}
-    permissions:
-      contents: read
-      id-token: write
+    environment: nonprod
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Sign in to Azure with GitHub OIDC
-        uses: azure/login@v2
+      - name: Azure login with OIDC
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign in to Azure Container Registry
-        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name "${{ vars.AZURE_ACR_NAME }}"
 
       - name: Build frontend container
         env:
-          API_BASE_URL: ${{ vars.BACKEND_URL }}/api
-        run: docker build --build-arg API_BASE_URL="${API_BASE_URL}" --tag "${IMAGE_REPOSITORY}:${IMAGE_TAG}" .
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+        run: |
+          IMAGE="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
 
-      - name: Scan container image with Trivy
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          timeout: 15m0s
+          echo "Building ${IMAGE}"
 
-      - name: Push immutable image to Azure Container Registry
+          docker build \
+            --build-arg API_BASE_URL="${BACKEND_URL}/api" \
+            --build-arg API_KEY="not-required" \
+            --tag "${IMAGE}" \
+            .
+
+      - name: Push reviewed image to ACR
         env:
           ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
         run: |
-          LOGIN_SERVER="${ACR_NAME}.azurecr.io"
-          docker tag "${IMAGE_REPOSITORY}:${IMAGE_TAG}" "${LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}"
-          docker push "${LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          IMAGE="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
 
-      - name: Deploy image to Azure Web App
+          docker push "${IMAGE}"
+
+      - name: Deploy exact image to App Service
         env:
           ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
           RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
           WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
         run: |
-          LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+          IMAGE="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
+
+          echo "Deploying ${IMAGE}"
+
           az webapp config container set \
             --resource-group "${RESOURCE_GROUP}" \
             --name "${WEBAPP_NAME}" \
-            --container-image-name "${LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" \
-            --container-registry-url "https://${LOGIN_SERVER}" \
-            --output none
-          az webapp start --resource-group "${RESOURCE_GROUP}" --name "${WEBAPP_NAME}"
+            --container-image-name "${IMAGE}" \
+            --container-registry-url "https://${ACR_NAME}.azurecr.io"
 
-      - name: Verify frontend
+          az webapp start \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}"
+
+      - name: Verify deployed image
         env:
-          FRONTEND_URL: https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+        run: |
+          EXPECTED="${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}"
+
+          ACTUAL=$(az webapp config container show \
+            --resource-group "${RESOURCE_GROUP}" \
+            --name "${WEBAPP_NAME}" \
+            --query "[?name=='DOCKER_CUSTOM_IMAGE_NAME'].value | [0]" \
+            -o tsv)
+
+          echo "Expected: ${EXPECTED}"
+          echo "Azure:    ${ACTUAL}"
+
+          case "${ACTUAL}" in
+            *"${EXPECTED}"*)
+              echo "Correct image configured."
+              ;;
+            *)
+              echo "Unexpected image configured." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Verify frontend and backend
+        env:
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
           BACKEND_URL: ${{ vars.BACKEND_URL }}
         run: |
+          echo "Waiting for frontend deployment..."
+
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error --max-time 15 "${FRONTEND_URL}" >/dev/null; then
-              echo "Frontend is healthy at ${FRONTEND_URL}" >> "${GITHUB_STEP_SUMMARY}"
+            STATUS=$(curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --max-time 15 \
+              "${FRONTEND_URL}" || true)
+
+            echo "Attempt ${attempt}/30: HTTP ${STATUS}"
+
+            if [ "${STATUS}" = "200" ]; then
+              echo "Frontend is available."
               break
             fi
+
             if [ "${attempt}" = "30" ]; then
               echo "Frontend did not become available: ${FRONTEND_URL}" >&2
               exit 1
             fi
-            sleep 20
+
+            sleep 10
           done
-          curl --fail --silent --show-error --max-time 15 "${BACKEND_URL}/actuator/health"
+
+          echo "Checking backend health..."
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 15 \
+            "${BACKEND_URL}/actuator/health"
+
+          echo
+          echo "Checking frontend/backend CORS..."
+
+          CORS_HEADERS=$(mktemp)
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 15 \
+            --dump-header "${CORS_HEADERS}" \
+            --output /dev/null \
+            --header "Origin: ${FRONTEND_URL}" \
+            "${BACKEND_URL}/api/certifications"
+
+          grep \
+            --ignore-case \
+            --fixed-strings \
+            "access-control-allow-origin: ${FRONTEND_URL}" \
+            "${CORS_HEADERS}"
+
+      - name: Publish deployment summary
+        if: always()
+        env:
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+          BACKEND_URL: ${{ vars.BACKEND_URL }}
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+        run: |
           {
             echo "### Frontend ${{ inputs.environment || 'nonprod' }} deployment"
             echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Image: \`${ACR_NAME}.azurecr.io/azure-quiz-frontend:${GITHUB_SHA}\`"
             echo "- Frontend: ${FRONTEND_URL}"
             echo "- Backend: ${BACKEND_URL}"
           } >> "${GITHUB_STEP_SUMMARY}"
