@@ -63,7 +63,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
-    needs: build-and-test
+    needs: build-test
     runs-on: ubuntu-latest
     environment: nonprod
 
