@@ -1,0 +1,79 @@
+name: Security - DAST
+
+on:
+  workflow_dispatch:
+
+  workflow_run:
+    workflows:
+      - "Frontend CI/CD"
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  zap:
+    name: OWASP ZAP frontend baseline scan
+
+    # Automatic scan only after a successful frontend deployment.
+    # Manual execution is also allowed.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    runs-on: ubuntu-latest
+    environment: nonprod
+
+    steps:
+      - name: Check frontend availability
+        env:
+          TARGET_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          echo "Checking frontend at ${TARGET_URL}"
+
+          for attempt in $(seq 1 12); do
+            STATUS=$(curl \
+              --silent \
+              --show-error \
+              --output /dev/null \
+              --write-out "%{http_code}" \
+              --max-time 15 \
+              "${TARGET_URL}" || true)
+
+            if [ "${STATUS}" = "200" ]; then
+              echo "Frontend is available."
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/12 returned HTTP ${STATUS}; retrying in 10 seconds."
+            sleep 10
+          done
+
+          echo "Frontend is not available: ${TARGET_URL}" >&2
+          exit 1
+
+      - name: Run OWASP ZAP baseline scan
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
+        with:
+          target: ${{ vars.FRONTEND_URL }}
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: zap-frontend-report
+
+      - name: Publish DAST summary
+        if: always()
+        env:
+          TARGET_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          {
+            echo "### Frontend DAST"
+            echo "- Tool: OWASP ZAP Baseline"
+            echo "- Target: ${TARGET_URL}"
+            echo "- Environment: nonprod"
+            echo "- Mode: informational baseline"
+            echo "- ZAP findings do not currently block deployment"
+            echo "- Report artifact: \`zap-frontend-report\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
